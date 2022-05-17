@@ -1,0 +1,390 @@
+#include<REG51.H>
+#include<INTRINS.H>
+
+#define uchar unsigned char
+#define uint unsigned int
+
+sbit s1=P3^2; 						   //定义4个按键接口
+sbit s2=P3^3;						   
+sbit s3=P3^4;
+sbit s4=P3^5;
+									   
+sbit lcdrs=P3^0;					   //定义1602液晶控制接口
+sbit lcden=P3^1;
+
+char num,wave_type,u;					    //定义全局变量
+int freq=100,step_value=1,step_value1=1;			//频率初始值是10Hz，步进值默认是0.1
+uchar code table[]="0123456789";		//定义显示的数字数组
+uchar code table1[]="Freq: Wave: ";		//初始化显示的字符
+unsigned long int m;
+int a,b,h,num1;
+
+uchar code sine[64]={
+135,145,158,167,176,188,199,209,218,226,234,240,245,249,252,254,254,253,251,247,243,237,230,222,213,204,193,182,170,158,
+146,133,121,108,96,84,72,61,50,41,32,24,17,11,7,3,1,0,0,2,5,9,14,20,28,36,45,55,66,78,90,102,114,128
+};					  //正弦波码表，此数组内的数据为，dac输出对应电压值对应的数字量
+					  //一个周期是采样64个点， 所以数组内是64个数据
+uchar code square[64]={
+255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,
+255,255,255,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+};					  //方波码表
+
+uchar code triangle[64]={
+0,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128,136,144,152,160,168,176,184,192,200,208,216,224,232,240,248,
+248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,0
+};						//三角波码表
+uchar code sawtooth[64]={
+0,4,8,12,16,20,24,28,32,36,40,45,49,53,57,61,65,69,73,77,81,85,89,93,97,101,105,109,113,117,121,125,130,134,138,142,
+146,150,154,158,162,166,170,174,178,182,186,190,194,198,202,206,210,215,219,223,227,231,235,239,243,247,251,255
+};					  //锯齿波码表
+
+void delay(uint xms)	 //延时函数
+{
+	int a,b;
+	for(a=xms;a>0;a--)
+		for(b=110;b>0;b--);
+}
+void write_com(uchar com)		//LCD1602写命令函数
+{
+	lcdrs=0;
+	P0=com;	
+	delay(1);
+	lcden=1;
+	delay(1);						 			  
+	lcden=0;
+}
+
+void write_data(uchar data)		//LCD1602写数据函数
+{
+	lcdrs=1;
+	P0=data;
+	delay(1);
+	lcden=1;
+	delay(1);
+	lcden=0;
+}
+
+void init_lcd()					//初始化函数
+{
+	uchar i;								  
+	lcden=0;					//默认开始状态为关使能端  
+	write_com(0x0f);
+	write_com(0x38);			//显示模式设置，默认为0x38,不用变。
+	write_com(0x01);			//显示清屏，将上次的内容清除，默认为0x01. 
+	write_com(0x0c);			//显示功能设置0x0f为开显示，显示光标，光标闪烁；0x0c为开显示，不显光标，光标不闪
+	write_com(0x06);			//设置光标状态默认0x06,为读一个字符光标加1. 
+	write_com(0x80);			//设置初始化数据指针，是在读指令的操作里进行的
+
+	for(i=6;i<12;i++)			   //字符显示初始化
+	{
+		write_data(table1[i]);	   //显示第一行字符Wave
+	}
+	write_com(0x80+0x40);
+	for(i=0;i<5;i++)
+	{
+		write_data(table1[i]);	   //显示第二行字符Freq
+	}
+	write_com(0x80+7);			   //选择第一行第7个位置开始写入，波形初始化为：正弦波
+
+	write_data('S');
+	write_data('i');
+	write_data('n');
+	write_data('e');
+	write_data(' ');
+	write_data(' ');
+
+	write_com(0x80+0x40+0x06);	    //选择第二行第6个位置开始写入，波形初始化频率为10HZ
+	write_data(' ');
+	write_data(' ');
+	write_data('1');
+	write_data('0');
+	write_data('.');
+	write_data('0');
+	write_data('H');
+	write_data('z');
+}
+void initclock()			   //定时器初始化
+{
+	TMOD=0x01;				   //定时器的工作方式
+	TH0=a;					   //定时器寄存器赋初值
+	TL0=b;
+	EA=1;					   //打开中断总开关
+	ET0=1;					   //打开定时器允许中断开关
+	TR0=1;					   //打开定时器定时开关
+}
+void display()				   //显示函数，用于显示当前波形所设定的频率值
+{
+	uchar ten_thousands,thousands,hundreds,tens,ones;	   //定义变量用于显示
+	ten_thousands=freq/10000;		       //将频率拆分成一个5位的数据，将数据除以10000，得到一位数的商，赋值给ten_thousands，为实际千位
+	thousands=freq%10000/1000;		   //将频率除以10000，余数除1000，得到实际百位，赋值给thousands
+	hundreds=freq%10000%1000/100;	   //将频率除以1000的余数再除以100就得到了频率的实际十位，赋值给hundreds
+	tens=freq%10000%1000%100/10;   //同上，得到频率的个位
+	ones=freq%10000%1000%100%10;	   //同上，得到频率的小数点后一位
+	write_com(0x80+0x40+0x06);	   //选中第二行第6个位置
+
+	if(ten_thousands==0)					//万位如果为0
+	write_data(' ');			//不显示
+	else						//万位不为零
+	write_data(table[ten_thousands]);		//正常显示万位
+   	if(ten_thousands==0&&thousands==0)         //万位、千位如果为0
+	write_data(' ');			//不显示
+	else						//千位不为0
+	write_data(table[thousands]);	//正常显示千位
+	if(ten_thousands==0&&thousands==0&&hundreds==0)	//万位、千位和百位都为0
+	write_data(' ');			//百位不显示
+	else						//不都为0
+	write_data(table[hundreds]);		//百位正常显示
+	write_data(table[tens]);		//显示十位数
+	write_data('.');			//显示小数点
+	write_data(table[ones]);		//显示个位
+	write_data('H');			//显示频率的单位Hz
+	write_data('z');
+
+	write_data(' ');
+	write_data(' ');
+
+	if(wave_type==0)			   //波形判断函数。0：正弦波；1：方波；2：三角波；3：锯齿波
+	{
+		write_com(0x80+7);
+
+		write_data('S');	   //正弦波英文：Sine
+		write_data('i');
+		write_data('n');
+		write_data('e');
+		write_data(' ');
+		write_data(' ');
+		write_data(' ');
+		write_data(' ');
+		write_data(' ');
+
+	}
+	if(wave_type==1)			   //方波英文：Square
+	{
+		write_com(0x80+7);
+
+		write_data('S');
+		write_data('q');
+		write_data('u');
+		write_data('a');
+		write_data('r');
+		write_data('e');
+		write_data(' ');
+		write_data(' ');
+		write_data(' ');
+
+	}
+
+
+	if(wave_type==2)				//三角波英文：Triangle
+	{
+		write_com(0x80+7);
+
+		write_data('T');
+		write_data('r');
+		write_data('i');
+		write_data('a');
+		write_data('n');
+		write_data('g');
+		write_data('l');
+		write_data('e');
+		write_data(' ');
+
+	}
+	if(wave_type==3)				  //锯齿波英文：Sawtooth
+	{
+		write_com(0x80+7);
+
+		write_data('S');
+		write_data('a');
+		write_data('w');
+		write_data('t');
+		write_data('o');
+		write_data('o');
+		write_data('t');
+		write_data('h');
+		write_data(' ');
+
+	}
+
+}
+void keyscan()					//按键扫描函数
+{
+	if(s1==0)					//频率加键是否被按下
+	{	 
+		EA=0;					//关闭中断
+		delay(2);				//延时消抖
+		if(s1==0)				//再次判断
+		{
+			while(!s1);			//按键松开
+			freq+=step_value;		//频率以步进值增加
+			if(freq>10000)		//频率值最大加到1000Hz
+			{
+				freq=100;		//超过1000Hz则回到初值10Hz
+			}
+			display();
+			m=65536-(150000/freq);	  //计算频率
+			a=m/256;				  //将定时器的初值赋值给变量
+			b=m%256;
+			EA=1;					  //打开中断总开关
+		}
+	}
+	if(s2==0)					  //频率减键是否被按下
+	{	 
+		
+		delay(5);				//延时消抖
+		if(s2==0)				//再次判断
+		{
+			EA=0;				//关闭中断
+			while(!s2);			//按键松开
+			freq-=step_value;		//频率以步进值减小
+			if(freq<100)		//频率最小为10Hz
+			{
+				freq=10000;	//小于10Hz则置为最大频率1000Hz
+			}
+			display();
+			m=65536-(150000/freq);
+			a=m/256;
+			b=m%256;	
+			EA=1;
+		}
+	}
+	if(s3==0)					   //波形切换键是否被按下
+	{	 
+		delay(5);
+		if(s3==0)
+		{
+			EA=0;
+			while(!s3);
+			wave_type++;
+			if(wave_type>=4)
+			{
+				wave_type=0;
+			}
+			display();
+			EA=1;
+		}
+	}	
+}
+void step_valuedisplay()				//步进值设置界面显示程序
+{
+	uint thousands,hundreds,tens,ones;		//定义步进值 千百十个位
+	thousands=step_value1/1000;			//将步进值除以1000得到千位，也就是频率的百位
+	hundreds=step_value1%1000/100;		//将步进值除以1000的余数除以100得到百位，也就是频率值的十位
+	tens=step_value1%1000%100/10;		//同上，得十位，也就是频率的个位
+	ones=step_value1%1000%100%10;		//取余10后得到个位，也就是频率步进值的小数点后一位
+	write_com(0x80+11);			//选中液晶第一行第11列
+	if(thousands==0)					//千位是否为0
+	write_data(' ');			//千位不显示
+	else						//千位不为0
+	write_data(table[thousands]);	//显示千位数据
+	if(thousands==0&&hundreds==0)			//千位、百位是否为0
+	write_data(' ');			//百位不显示
+	else						//百位不为0
+	write_data(table[hundreds]);		//显示百位数据
+	write_data(table[tens]);		//显示十位数据
+	write_data('.');			//显示小数点
+	write_data(table[ones]);		//显示个位，也就是小数点后一位
+}
+void step_valuejiance()				//步进值设置按键程序
+{
+	if(s4==0)			    //步进设置按键按下
+	{
+		delay(5);
+		if(s4==0)
+		{
+			 while(!s4);
+			 h++;
+			 if(h==1)							//进入设置状态时
+			 {									
+			 	 write_com(0x01);				//清屏
+				 write_com(0x80);				//初始化显示步进设置界面
+				 write_data('S');delay(1);	    //显示字符名：Step Value(步进值)
+				 write_data('t');delay(1);
+				 write_data('e');delay(1);
+				 write_data('p');delay(1);
+				 write_data(' ');delay(1);
+				 write_data('v');delay(1);
+				 write_data('a');delay(1);
+				 write_data('l');delay(1);
+				 write_data('u');delay(1);
+				 write_data('e');delay(1);
+				 write_data(':');delay(1);
+				 step_value1=step_value;					//步进值赋值给临时变量				 								
+				 step_valuedisplay();				//显示步进值
+			 }
+			 if(h==2)							//退出设置
+			 {
+			 	h=0;							//清零
+				step_value=step_value1;					//设置好的临时步进值赋值给步进变量
+				
+				init_lcd();						//初始化液晶显示
+				initclock();					//定时器初始化
+				display();						//调用显示程序
+			 }
+		}
+	}
+	if(h==1)			                        //设置步进值
+	{
+		if(s1==0)								//加键按下
+		{
+			delay(5);							//延时去抖
+			if(s1==0)							//再次判断
+			{
+				while(!s1);						//按键释放
+				step_value1++;						//步进值加1
+				if(step_value1>=1001)				//步进值最大1000，也就是100.0Hz
+				{
+					step_value1=1;					//超过最大值就恢复到0.1Hz
+				}
+				step_valuedisplay();					//步进显示
+			}
+		}
+		if(s2==0)				//步进减键，编程逻辑同上
+		{
+			delay(5);
+			if(s2==0)
+			{
+				while(!s2);
+				step_value1--;
+				if(step_value1<=0)
+				{
+					step_value1=1000;
+				}
+				step_valuedisplay();
+			}
+		}
+	}
+}
+void main()					 //主函数
+{	
+	init_lcd();				 //初始化LCD1602液晶
+	m=65536-(150000/freq);
+	a=m/256;
+	b=m%256;
+	initclock();			 //定时器初始化
+	while(1)
+	{
+		if(h==0)			 //正常模式不是步进调节
+		{
+			keyscan();		  //按键扫描
+		}
+		 
+		step_valuejiance();		 //扫描步进调节程序
+
+		switch(wave_type)		 //选择波形
+		{
+			case 0 : P1=sine[u]; break;			 //正弦波
+			case 1 : P1=square[u]; break;		 //方波
+			case 2 : P1=triangle[u]; break;		 //三角波
+			case 3 : P1=sawtooth[u]; break;		 //锯齿波
+		}
+	}
+}
+void T0_time()interrupt 1		   //定时器0
+{
+	TH0=a;						   //根据不同的初值，定时器定时时间不同，达到不同频率的目的
+	TL0=b;
+	u++;						   //变量u加1
+	if(u>=64)					   //一个周期采样128个点， 所以加到128就清零
+	u=0;						   //变量u清零
+}
